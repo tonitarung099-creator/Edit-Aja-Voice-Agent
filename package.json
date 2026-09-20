@@ -1,0 +1,43 @@
+{
+  "name": "edit-aja-voice-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Modern Windows desktop controller for Edit Aja voice production workflows.",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build:web": "vite build",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build": "npm run build:web && npm run build:electron",
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "@google/genai": "^1.27.0",
+    "electron-store": "^10.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "id.editaja.voiceagent",
+    "productName": "Edit Aja Voice Agent",
+    "files": ["dist/**/*", "dist-electron/**/*", "package.json"],
+    "directories": {"output": "release"},
+    "win": {"target": ["nsis", "portable"]}
+  }
+}
