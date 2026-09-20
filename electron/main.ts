@@ -16,8 +16,10 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0a0d12', symbolColor: '#d7dde8', height: 42 },
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   });
   const dev = process.env.VITE_DEV_SERVER_URL;
