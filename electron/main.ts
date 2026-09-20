@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDownloadWindowState } from '../shared/downloadWindow.js';
 import { MAX_GEMINI_API_KEYS, MAX_GOOGLE_PROFILES } from '../shared/constants.js';
+import { discoverChromeProfiles } from './chromeProfiles.js';
+import { loadProfiles, removeProfile, saveProfile } from './profileRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +22,7 @@ function createWindow() {
   });
   const dev = process.env.VITE_DEV_SERVER_URL;
   if (dev) win.loadURL(dev);
-  else win.loadFile(path.join(__dirname, '../dist/index.html'));
+  else win.loadFile(path.join(__dirname, '../../dist/index.html'));
 }
 
 ipcMain.handle('voice-agent:get-runtime-state', () => ({
@@ -29,6 +31,10 @@ ipcMain.handle('voice-agent:get-runtime-state', () => ({
   version: app.getVersion(),
 }));
 ipcMain.handle('voice-agent:get-download-window', () => getDownloadWindowState());
+ipcMain.handle('voice-agent:list-profiles', () => loadProfiles());
+ipcMain.handle('voice-agent:discover-chrome-profiles', () => discoverChromeProfiles());
+ipcMain.handle('voice-agent:save-profile', (_event, profile) => saveProfile(profile));
+ipcMain.handle('voice-agent:remove-profile', (_event, slot) => removeProfile(Number(slot)));
 
 app.whenReady().then(() => {
   createWindow();
