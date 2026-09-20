@@ -1,0 +1,8 @@
+export const MAX_GOOGLE_PROFILES = 50;
+export const ACCOUNTS_PER_PART = 2;
+export const MAX_ACCOUNT_PAIRS = MAX_GOOGLE_PROFILES / ACCOUNTS_PER_PART;
+export const DEFAULT_CONCURRENT_PARTS = 3;
+export const MAX_GEMINI_API_KEYS = 100;
+export const DOWNLOAD_TIMEZONE = 'Asia/Jakarta';
+export const DOWNLOAD_WINDOW_START = '04:30';
+export const DOWNLOAD_WINDOW_END = '05:05';
