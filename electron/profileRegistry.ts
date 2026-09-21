@@ -32,7 +32,12 @@ export function saveProfile(profile: StoredProfile): StoredProfile[] {
   if (!profile.chromeProfileName.trim()) {
     throw new Error('Chrome profile wajib dipilih.');
   }
-  const current = loadProfiles().filter(p => p.slot !== profile.slot);
+  const all = loadProfiles();
+  const duplicate = all.find(p => p.slot !== profile.slot && p.chromeProfileName === profile.chromeProfileName);
+  if (duplicate) {
+    throw new Error(`Chrome profile ini sudah dipakai oleh ${duplicate.label} (slot ${duplicate.slot}). Setiap slot VO harus memakai akun/profile berbeda.`);
+  }
+  const current = all.filter(p => p.slot !== profile.slot);
   current.push({
     slot: profile.slot,
     label: profile.label.trim() || `VO${String(profile.slot).padStart(2, '0')}`,
