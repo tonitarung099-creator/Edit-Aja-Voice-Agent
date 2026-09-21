@@ -9,7 +9,9 @@ import { MAX_GOOGLE_PROFILES } from '../shared/constants.js';
 import type { RuntimeSnapshot, RuntimeVoiceJob } from '../shared/runtimeTypes.js';
 
 const TARGET_URL = 'https://aistudio.google.com/generate-speech?model=gemini-2.5-pro-preview-tts';
-const PREPARE_BATCH_SIZE = 6;
+const BATCH_SIZE = 6;
+const GENERATION_TIMEOUT_MS = 30 * 60 * 1000;
+const INSPECT_INTERVAL_MS = 5000;
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -20,6 +22,17 @@ function parseJsonPayload(stdout: string) {
     try { return JSON.parse(line); } catch {}
   }
   return null;
+}
+
+function delay(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('aborted'));
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new Error('aborted'));
+    }, { once: true });
+  });
 }
 
 export class JobController {
@@ -37,12 +50,15 @@ export class JobController {
 
   scan(inputFolder: string) {
     const parts = scanPartFolder(inputFolder);
+    if (parts.length > MAX_GOOGLE_PROFILES / 2) {
+      throw new Error(`Satu siklus maksimal ${MAX_GOOGLE_PROFILES / 2} Part karena setiap Part membutuhkan 2 akun unik. Part sisanya akan didukung setelah sistem download/resume selesai.`);
+    }
+
     const profiles = new Map(loadProfiles().filter(p => p.enabled).map(p => [p.slot, p]));
     const jobs: RuntimeVoiceJob[] = [];
 
     parts.forEach((part, index) => {
-      const pairIndex = index % (MAX_GOOGLE_PROFILES / 2);
-      const accountA = pairIndex * 2 + 1;
+      const accountA = index * 2 + 1;
       const accountB = accountA + 1;
       for (const [accountSlot, pairSide] of [[accountA, 'A'], [accountB, 'B']] as const) {
         const configured = profiles.has(accountSlot);
@@ -83,23 +99,32 @@ export class JobController {
       throw new Error(`${blocked.length} voice job belum punya Chrome profile. Lengkapi tab 50 Accounts terlebih dahulu.`);
     }
 
-    const batch = this.snapshot.jobs.slice(0, PREPARE_BATCH_SIZE);
-    for (const job of this.snapshot.jobs.slice(PREPARE_BATCH_SIZE)) {
-      job.message = 'Menunggu batch berikutnya setelah deteksi Generate selesai aktif';
-      job.updatedAt = nowIso();
-    }
-
     this.snapshot.running = true;
     this.snapshot.startedAt = nowIso();
     this.aborter = new AbortController();
     this.emit();
 
     try {
-      // Launch sequentially so HWND detection cannot race. Once Generate is clicked,
-      // that window may keep working while the next account is prepared.
-      for (let i = 0; i < batch.length; i++) {
+      for (let offset = 0; offset < this.snapshot.jobs.length; offset += BATCH_SIZE) {
         if (this.aborter.signal.aborted) break;
-        await this.prepareAndGenerateOne(batch[i], i + 1, this.aborter.signal);
+        const batch = this.snapshot.jobs.slice(offset, offset + BATCH_SIZE);
+
+        for (const job of this.snapshot.jobs.slice(offset + BATCH_SIZE)) {
+          if (job.status === 'waiting') {
+            job.message = `Menunggu batch ${Math.floor(offset / BATCH_SIZE) + 2}`;
+            job.updatedAt = nowIso();
+          }
+        }
+        this.emit();
+
+        // Sequential launch avoids HWND races. Previous windows generate in parallel.
+        for (let i = 0; i < batch.length; i++) {
+          if (this.aborter.signal.aborted) break;
+          await this.prepareAndGenerateOne(batch[i], i + 1, this.aborter.signal);
+        }
+
+        if (this.aborter.signal.aborted) break;
+        await this.waitForBatch(batch, this.aborter.signal);
       }
     } finally {
       this.snapshot.running = false;
@@ -112,7 +137,7 @@ export class JobController {
   stop() {
     this.aborter?.abort();
     for (const job of this.snapshot.jobs) {
-      if (['opening','filling','prepared','selecting_voice'].includes(job.status)) {
+      if (['waiting','opening','filling','prepared','selecting_voice'].includes(job.status)) {
         job.status = 'stopped';
         job.message = 'Dihentikan pengguna';
         job.updatedAt = nowIso();
@@ -196,6 +221,79 @@ export class JobController {
     }
 
     this.patch(job, 'generating', generated.message || 'Generate sedang berjalan');
+  }
+
+  private async waitForBatch(batch: RuntimeVoiceJob[], signal: AbortSignal) {
+    const deadline = Date.now() + GENERATION_TIMEOUT_MS;
+
+    while (!signal.aborted) {
+      const generating = batch.filter(j => j.status === 'generating');
+      if (!generating.length) return;
+
+      if (Date.now() > deadline) {
+        for (const job of generating) {
+          this.patch(job, 'error', 'Timeout menunggu hasil Generate (30 menit).');
+        }
+        return;
+      }
+
+      for (const job of generating) {
+        if (signal.aborted) return;
+        if (!job.windowHandle) {
+          this.patch(job, 'error', 'Window handle hilang saat memantau Generate.');
+          continue;
+        }
+
+        const inspected = await runProcess('powershell.exe', [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass',
+          '-File', this.workerPath('aiStudioInspect.ps1'),
+          '-Hwnd', String(job.windowHandle),
+          '-MinimizeWhenReady',
+        ], signal).catch(error => ({
+          exitCode: -1,
+          stdout: '',
+          stderr: error instanceof Error ? error.message : String(error),
+        }));
+
+        if (signal.aborted) return;
+        const payload = parseJsonPayload(inspected.stdout);
+        if (!payload?.ok) {
+          this.patch(job, 'error', payload?.message || inspected.stderr.trim() || 'Gagal membaca status Generate.');
+          continue;
+        }
+
+        switch (payload.state) {
+          case 'generated':
+            this.patch(job, 'generated', payload.message || 'Audio siap dan masuk antrean download.');
+            break;
+          case 'provider_limited':
+            this.patch(job, 'provider_limited', payload.message || 'Akun terkena limit provider.');
+            break;
+          case 'needs_login':
+            this.patch(job, 'needs_login', payload.message || 'Sesi Google meminta login.');
+            break;
+          case 'error':
+          case 'window_closed':
+            this.patch(job, 'error', payload.message || 'Generate gagal.');
+            break;
+          default:
+            if (job.message !== payload.message) {
+              this.patch(job, 'generating', payload.message || 'Generate masih berjalan.');
+            }
+            break;
+        }
+      }
+
+      if (batch.every(j => ['generated','provider_limited','needs_login','error','stopped'].includes(j.status))) {
+        return;
+      }
+
+      try {
+        await delay(INSPECT_INTERVAL_MS, signal);
+      } catch {
+        return;
+      }
+    }
   }
 
   private patch(job: RuntimeVoiceJob, status: RuntimeVoiceJob['status'], message: string) {
