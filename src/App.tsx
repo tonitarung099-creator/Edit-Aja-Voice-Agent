@@ -33,7 +33,7 @@ type RuntimeVoiceJob = {
   pairSide: 'A' | 'B';
   sourcePath: string;
   sourceName: string;
-  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'error' | 'stopped';
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'generated' | 'provider_limited' | 'error' | 'stopped';
   message: string;
   windowHandle?: number;
   updatedAt: string;
@@ -62,9 +62,9 @@ function voLabel(slot:number) {
 }
 
 function statusTone(status?:RuntimeVoiceJob['status']) {
-  if (status === 'prepared' || status === 'generating') return 'good';
-  if (status === 'opening' || status === 'filling' || status === 'selecting_voice') return 'busy';
-  if (status === 'needs_login') return 'warn';
+  if (status === 'prepared' || status === 'generated') return 'good';
+  if (status === 'opening' || status === 'filling' || status === 'selecting_voice' || status === 'generating') return 'busy';
+  if (status === 'needs_login' || status === 'provider_limited') return 'warn';
   if (status === 'error' || status === 'stopped') return 'bad';
   return 'default';
 }
@@ -79,6 +79,8 @@ function shortStatus(job?:RuntimeVoiceJob) {
     prepared:'Prepared',
     selecting_voice:'Voice',
     generating:'Generating',
+    generated:'Generated',
+    provider_limited:'Limited',
     error:'Error',
     stopped:'Stopped',
   };
@@ -248,7 +250,7 @@ export default function App(){
       setWorkflowMessage('Menjalankan batch pertama: 3 Part / 6 akun…');
       const finalState = await window.voiceAgent.startWorkflow(inputFolder);
       setRuntime(finalState);
-      setWorkflowMessage('Batch pertama sudah diproses sampai perintah Generate. Deteksi selesai + batch berikutnya adalah tahap berikutnya.');
+      setWorkflowMessage('Generate otomatis selesai dipantau untuk semua batch yang dapat diproses. Audio siap tetap tersimpan untuk antrean download.');
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : 'Workflow gagal dijalankan.');
     }
@@ -266,8 +268,9 @@ export default function App(){
 
   const configuredCount = profiles.length;
   const generatingCount = runtime.jobs.filter(j=>j.status==='generating').length;
-  const activeCount = runtime.jobs.filter(j=>['opening','filling','selecting_voice'].includes(j.status)).length;
-  const issueCount = runtime.jobs.filter(j=>j.status==='error'||j.status==='needs_login').length;
+  const generatedCount = runtime.jobs.filter(j=>j.status==='generated').length;
+  const activeCount = runtime.jobs.filter(j=>['opening','filling','selecting_voice','generating'].includes(j.status)).length;
+  const issueCount = runtime.jobs.filter(j=>['error','needs_login','provider_limited'].includes(j.status)).length;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -326,13 +329,13 @@ export default function App(){
         <section className="stats-grid">
           <div className="stat"><Gauge/><div><span>Parts</span><b>{groupedJobs.length}</b><small>{runtime.jobs.length} voice jobs</small></div></div>
           <div className="stat"><CircleUserRound/><div><span>Accounts</span><b>{configuredCount}/50</b><small>25 pasangan maksimum</small></div></div>
-          <div className="stat"><CheckCircle2/><div><span>Generating</span><b>{generatingCount}</b><small>voice {voiceName}</small></div></div>
+          <div className="stat"><CheckCircle2/><div><span>Generated</span><b>{generatedCount}</b><small>{generatingCount} masih generating</small></div></div>
           <div className="stat"><Download/><div><span>Download</span><b>{downloadState.open ? 'OPEN' : 'LOCKED'}</b><small>{downloadState.nextLabel}</small></div></div>
         </section>
 
         <section className="panel">
           <div className="panel-head">
-            <div><b>Part → Account pairing</b><span>Batch pertama menjalankan maksimal 3 Part / 6 Chrome window</span></div>
+            <div><b>Part → Account pairing</b><span>Otomatis 3 Part / 6 window per batch; batch berikutnya mulai setelah audio siap</span></div>
             <div className="head-actions">
               {issueCount > 0 && <Pill tone="bad"><AlertTriangle size={12}/>{issueCount} issue</Pill>}
               <Pill tone="good">1 Part = 2 akun</Pill>
@@ -408,8 +411,8 @@ export default function App(){
       <div className="agent-feed">
         <div className="agent-card"><Sparkles size={17}/><p>Browser Controller V14-compatible sudah tersambung. Agent akan memakai kontrol lokal lebih dulu.</p></div>
         <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
-        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan batch dengan voice ${voiceName}.` : `${generatingCount} VO sudah dikirim ke Generate, ${issueCount} issue.`}</p></div>
-        <div className="agent-msg"><span>Next engine step</span><p>Deteksi audio selesai, minimalkan batch, lanjut batch berikutnya, lalu antrekan download.</p></div>
+        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan/memantau batch dengan voice ${voiceName}.` : `${generatedCount} VO generated, ${issueCount} issue.`}</p></div>
+        <div className="agent-msg"><span>Next engine step</span><p>Download Manager akan memanggil kembali window generated hanya pada 04:30–05:05 WIB.</p></div>
       </div>
       <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Chat Agent belum dieksekusi; tool layer sedang dibangun bertahap.</small></div>
     </aside>
