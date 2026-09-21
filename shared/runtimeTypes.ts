@@ -4,6 +4,8 @@ export type RuntimeJobStatus =
   | 'needs_login'
   | 'filling'
   | 'prepared'
+  | 'selecting_voice'
+  | 'generating'
   | 'error'
   | 'stopped';
 
