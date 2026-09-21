@@ -47,6 +47,22 @@ type RuntimeSnapshot = {
   jobs: RuntimeVoiceJob[];
 };
 
+type ApiKeySummary = {
+  slot: number;
+  label: string;
+  configured: boolean;
+  maskedKey: string;
+  status: 'empty' | 'untested' | 'ready' | 'invalid' | 'provider_limited' | 'error';
+  lastMessage: string;
+  updatedAt: string | null;
+};
+
+type AgentMessage = {
+  role: 'user' | 'agent';
+  text: string;
+  source?: 'local' | 'gemini';
+};
+
 const EMPTY_RUNTIME:RuntimeSnapshot = {
   running:false,
   inputFolder:null,
@@ -94,6 +110,12 @@ function shortStatus(job?:RuntimeVoiceJob) {
 export default function App(){
   const [tab,setTab] = useState<'jobs'|'accounts'|'api'>('jobs');
   const [agentText,setAgentText] = useState('');
+  const [agentBusy,setAgentBusy] = useState(false);
+  const [agentMessages,setAgentMessages] = useState<AgentMessage[]>([]);
+  const [apiKeys,setApiKeys] = useState<ApiKeySummary[]>([]);
+  const [apiImportText,setApiImportText] = useState('');
+  const [apiMessage,setApiMessage] = useState('');
+  const [apiBusySlot,setApiBusySlot] = useState<number|null>(null);
   const [profiles,setProfiles] = useState<StoredProfile[]>([]);
   const [chromeProfiles,setChromeProfiles] = useState<ChromeProfileCandidate[]>([]);
   const [editingSlot,setEditingSlot] = useState(1);
@@ -125,6 +147,7 @@ export default function App(){
       if (!window.voiceAgent) return;
       try {
         setProfiles(await window.voiceAgent.listProfiles());
+        setApiKeys(await window.voiceAgent.listApiKeys());
         setDownloadState(await window.voiceAgent.getDownloadWindow());
         const settings = await window.voiceAgent.getSettings();
         setVoiceName(settings.voiceName || DEFAULT_GEMINI_TTS_VOICE);
@@ -141,6 +164,65 @@ export default function App(){
     }, 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  async function importKeys() {
+    if (!window.voiceAgent) return;
+    const keys = apiImportText.split(/\r?\n|[,;]+/).map(x=>x.trim()).filter(Boolean);
+    if (!keys.length) {
+      setApiMessage('Tempel minimal satu API key.');
+      return;
+    }
+    try {
+      setApiKeys(await window.voiceAgent.importApiKeys(keys));
+      setApiImportText('');
+      setApiMessage(`${keys.length} input diproses. Duplikat otomatis dilewati.`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : 'Gagal mengimpor API key.');
+    }
+  }
+
+  async function testKey(slot:number) {
+    if (!window.voiceAgent) return;
+    setApiBusySlot(slot);
+    try {
+      setApiKeys(await window.voiceAgent.testApiKey(slot));
+      setApiMessage(`API ${String(slot).padStart(3,'0')} selesai dites.`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : 'Tes API gagal.');
+    } finally {
+      setApiBusySlot(null);
+    }
+  }
+
+  async function deleteKey(slot:number) {
+    if (!window.voiceAgent) return;
+    try {
+      setApiKeys(await window.voiceAgent.removeApiKey(slot));
+      setApiMessage(`API ${String(slot).padStart(3,'0')} dihapus dari vault lokal.`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : 'Gagal menghapus API key.');
+    }
+  }
+
+  async function sendAgent() {
+    if (!window.voiceAgent || agentBusy) return;
+    const message = agentText.trim();
+    if (!message) return;
+    setAgentText('');
+    setAgentMessages(prev=>[...prev,{role:'user',text:message}]);
+    setAgentBusy(true);
+    try {
+      const reply = await window.voiceAgent.agentChat(message);
+      setAgentMessages(prev=>[...prev,{role:'agent',text:reply.text,source:reply.source}]);
+      setApiKeys(await window.voiceAgent.listApiKeys());
+      const settings = await window.voiceAgent.getSettings();
+      setVoiceName(settings.voiceName || DEFAULT_GEMINI_TTS_VOICE);
+    } catch (error) {
+      setAgentMessages(prev=>[...prev,{role:'agent',text:error instanceof Error ? error.message : 'Agent gagal menjalankan perintah.'}]);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
 
   async function scanChromeProfiles() {
     if (!window.voiceAgent) {
@@ -271,6 +353,8 @@ export default function App(){
   }
 
   const configuredCount = profiles.length;
+  const configuredApiCount = apiKeys.filter(k=>k.configured).length;
+  const readyApiCount = apiKeys.filter(k=>k.status==='ready').length;
   const generatingCount = runtime.jobs.filter(j=>j.status==='generating').length;
   const generatedCount = runtime.jobs.filter(j=>j.status==='generated').length;
   const downloadingCount = runtime.jobs.filter(j=>j.status==='downloading').length;
@@ -404,10 +488,27 @@ export default function App(){
       </section>}
 
       {tab==='api' && <section className="panel">
-        <div className="panel-head"><div><b>Gemini API Pool</b><span>100 slot API untuk AI Agent. Kunci asli akan disimpan lokal dan terenkripsi, bukan di GitHub.</span></div><Pill>{MAX_GEMINI_API_KEYS} slots</Pill></div>
-        <div className="api-summary">
-          <div className="big-ring"><b>0</b><span>/ 100</span></div>
-          <div><h3>API vault tahap berikutnya</h3><p>Agent tetap mengutamakan otomasi lokal. Gemini dipakai untuk analisis error dan perintah kompleks saat diperlukan.</p><button className="btn primary"><KeyRound size={16}/>Kelola API Keys</button></div>
+        <div className="panel-head">
+          <div><b>Gemini API Pool</b><span>Maksimal 100 key. Nilai asli dienkripsi lokal dan tidak pernah dikirim kembali ke renderer setelah disimpan.</span></div>
+          <div className="head-actions"><Pill tone="good">{readyApiCount} ready</Pill><Pill>{configuredApiCount}/{MAX_GEMINI_API_KEYS}</Pill></div>
+        </div>
+        <div className="api-vault">
+          <div className="api-import">
+            <div className="editor-title"><KeyRound size={17}/><div><b>Import API keys</b><span>Satu key per baris. Duplikat dilewati dan slot kosong diisi otomatis.</span></div></div>
+            <textarea value={apiImportText} onChange={e=>setApiImportText(e.target.value)} placeholder={"AIza...\nAIza...\nAIza..."}/>
+            <div className="api-import-actions"><span>{apiMessage || 'Key disimpan memakai enkripsi Windows.'}</span><button className="btn primary" onClick={importKeys}><Save size={15}/>Import</button></div>
+          </div>
+          <div className="api-grid">
+            {apiKeys.map(key=><div className={`api-card ${key.configured?'configured':''}`} key={key.slot}>
+              <div className="api-card-top"><b>{key.label}</b><Pill tone={key.status==='ready'?'good':key.status==='provider_limited'?'warn':key.status==='invalid'||key.status==='error'?'bad':'default'}>{key.status}</Pill></div>
+              <code>{key.configured ? key.maskedKey : 'empty'}</code>
+              <span title={key.lastMessage}>{key.lastMessage || 'Slot kosong'}</span>
+              {key.configured && <div className="api-card-actions">
+                <button className="mini-btn" onClick={()=>testKey(key.slot)} disabled={apiBusySlot===key.slot}>{apiBusySlot===key.slot?'Testing…':'Test'}</button>
+                <button className="icon-btn danger-icon" onClick={()=>deleteKey(key.slot)} title="Hapus key"><Trash2 size={12}/></button>
+              </div>}
+            </div>)}
+          </div>
         </div>
       </section>}
     </main>
@@ -415,12 +516,17 @@ export default function App(){
     <aside className="agent">
       <div className="agent-head"><div className="agent-icon"><Bot/></div><div><b>AI Agent</b><span><i className="dot ready"/>Siap mengontrol workflow</span></div></div>
       <div className="agent-feed">
-        <div className="agent-card"><Sparkles size={17}/><p>Browser Controller V14-compatible sudah tersambung. Agent akan memakai kontrol lokal lebih dulu.</p></div>
-        <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
+        <div className="agent-card"><Sparkles size={17}/><p>Agent memakai action lokal untuk perintah sederhana dan Gemini untuk memahami perintah kompleks.</p></div>
+        <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–sebelum 05:05 WIB. Provider limit tidak di-bypass.</p></div>
         <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan/memantau batch dengan voice ${voiceName}.` : `${generatedCount} antre download, ${downloadedCount} sudah tersimpan, ${issueCount} issue.`}</p></div>
-        <div className="agent-msg"><span>Download rule</span><p>Scheduler otomatis mengecek antrean setiap 15 detik dan hanya boleh memulai download pada 04:30–sebelum 05:05 WIB.</p></div>
+        {agentMessages.map((msg,i)=><div className={msg.role==='user'?'agent-chat user':'agent-chat'} key={i}><span>{msg.role==='user'?'Kamu':msg.source==='gemini'?'Agent · Gemini':'Agent · Local'}</span><p>{msg.text}</p></div>)}
+        {agentBusy && <div className="agent-chat"><span>Agent</span><p>Memproses…</p></div>}
       </div>
-      <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Chat Agent belum dieksekusi; tool layer sedang dibangun bertahap.</small></div>
+      <div className="agent-input">
+        <textarea value={agentText} onChange={e=>setAgentText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void sendAgent();}}} placeholder="Contoh: cek status, mulai semua, pakai voice Charon..."/>
+        <button onClick={()=>void sendAgent()} disabled={agentBusy}><Sparkles size={17}/></button>
+        <small>Local first · Gemini 3.6 Flash untuk perintah kompleks.</small>
+      </div>
     </aside>
   </div>;
 }
