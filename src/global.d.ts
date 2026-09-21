@@ -19,7 +19,7 @@ type RuntimeVoiceJob = {
   pairSide: 'A' | 'B';
   sourcePath: string;
   sourceName: string;
-  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'error' | 'stopped';
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'generated' | 'provider_limited' | 'error' | 'stopped';
   message: string;
   windowHandle?: number;
   updatedAt: string;
