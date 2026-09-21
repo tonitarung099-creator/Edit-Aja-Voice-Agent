@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   getSettings: () => ipcRenderer.invoke('voice-agent:get-settings'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('voice-agent:save-settings', settings),
 
+  listApiKeys: () => ipcRenderer.invoke('voice-agent:list-api-keys'),
+  importApiKeys: (keys: string[]) => ipcRenderer.invoke('voice-agent:import-api-keys', keys),
+  removeApiKey: (slot: number) => ipcRenderer.invoke('voice-agent:remove-api-key', slot),
+  testApiKey: (slot: number) => ipcRenderer.invoke('voice-agent:test-api-key', slot),
+  agentChat: (message: string) => ipcRenderer.invoke('voice-agent:agent-chat', message),
+
   chooseInputFolder: () => ipcRenderer.invoke('voice-agent:choose-input-folder'),
   scanInput: (folder: string) => ipcRenderer.invoke('voice-agent:scan-input', folder),
   startWorkflow: (folder: string) => ipcRenderer.invoke('voice-agent:start-workflow', folder),
