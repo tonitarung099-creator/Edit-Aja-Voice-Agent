@@ -5,6 +5,7 @@ import { getDownloadWindowState } from '../shared/downloadWindow.js';
 import { MAX_GEMINI_API_KEYS, MAX_GOOGLE_PROFILES } from '../shared/constants.js';
 import { discoverChromeProfiles } from './chromeProfiles.js';
 import { loadProfiles, removeProfile, saveProfile } from './profileRegistry.js';
+import { loadSettings, saveSettings } from './settingsStore.js';
 import { JobController } from './jobController.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +40,8 @@ ipcMain.handle('voice-agent:list-profiles', () => loadProfiles());
 ipcMain.handle('voice-agent:discover-chrome-profiles', () => discoverChromeProfiles());
 ipcMain.handle('voice-agent:save-profile', (_event, profile) => saveProfile(profile));
 ipcMain.handle('voice-agent:remove-profile', (_event, slot) => removeProfile(Number(slot)));
+ipcMain.handle('voice-agent:get-settings', () => loadSettings());
+ipcMain.handle('voice-agent:save-settings', (_event, settings) => saveSettings(settings));
 
 ipcMain.handle('voice-agent:choose-input-folder', async () => {
   const result = await dialog.showOpenDialog({
