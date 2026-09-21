@@ -8,6 +8,7 @@ import { MAX_GOOGLE_PROFILES } from '../shared/constants.js';
 import type { RuntimeSnapshot, RuntimeVoiceJob } from '../shared/runtimeTypes.js';
 
 const TARGET_URL = 'https://aistudio.google.com/generate-speech?model=gemini-2.5-pro-preview-tts';
+const PREPARE_BATCH_SIZE = 6;
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -28,6 +29,7 @@ export class JobController {
     const parts = scanPartFolder(inputFolder);
     const profiles = new Map(loadProfiles().filter(p => p.enabled).map(p => [p.slot, p]));
     const jobs: RuntimeVoiceJob[] = [];
+
     parts.forEach((part, index) => {
       const pairIndex = index % (MAX_GOOGLE_PROFILES / 2);
       const accountA = pairIndex * 2 + 1;
@@ -42,11 +44,12 @@ export class JobController {
           sourcePath: part.fullPath,
           sourceName: part.name,
           status: configured ? 'waiting' : 'error',
-          message: configured ? 'Menunggu' : `VO${String(accountSlot).padStart(2,'0')} belum dikonfigurasi`,
+          message: configured ? 'Menunggu batch' : `VO${String(accountSlot).padStart(2,'0')} belum dikonfigurasi`,
           updatedAt: nowIso(),
         });
       }
     });
+
     this.snapshot = {
       running: false,
       inputFolder,
@@ -59,10 +62,21 @@ export class JobController {
 
   async start(inputFolder: string) {
     if (this.snapshot.running) throw new Error('Workflow sedang berjalan.');
+
     this.scan(inputFolder);
+    if (!this.snapshot.jobs.length) {
+      throw new Error('Tidak ditemukan file Part. Nama file harus mengandung Part1, Part2, dan seterusnya.');
+    }
+
     const blocked = this.snapshot.jobs.filter(j => j.status === 'error');
     if (blocked.length) {
       throw new Error(`${blocked.length} voice job belum punya Chrome profile. Lengkapi tab 50 Accounts terlebih dahulu.`);
+    }
+
+    const batch = this.snapshot.jobs.slice(0, PREPARE_BATCH_SIZE);
+    for (const job of this.snapshot.jobs.slice(PREPARE_BATCH_SIZE)) {
+      job.message = 'Menunggu batch berikutnya setelah tahap Generate aktif';
+      job.updatedAt = nowIso();
     }
 
     this.snapshot.running = true;
@@ -71,10 +85,10 @@ export class JobController {
     this.emit();
 
     try {
-      // Tahap V14-compatible sengaja berurutan saat membuka window agar deteksi HWND tidak saling berebut.
-      for (let i = 0; i < this.snapshot.jobs.length; i++) {
+      // V14-compatible: launch sequentially so HWND detection cannot race.
+      for (let i = 0; i < batch.length; i++) {
         if (this.aborter.signal.aborted) break;
-        await this.prepareOne(this.snapshot.jobs[i], (i % 6) + 1, this.aborter.signal);
+        await this.prepareOne(batch[i], i + 1, this.aborter.signal);
       }
     } finally {
       this.snapshot.running = false;
@@ -87,7 +101,7 @@ export class JobController {
   stop() {
     this.aborter?.abort();
     for (const job of this.snapshot.jobs) {
-      if (job.status === 'waiting' || job.status === 'opening' || job.status === 'filling') {
+      if (job.status === 'opening' || job.status === 'filling') {
         job.status = 'stopped';
         job.message = 'Dihentikan pengguna';
         job.updatedAt = nowIso();
@@ -105,7 +119,7 @@ export class JobController {
       return;
     }
 
-    this.patch(job, 'opening', `Membuka ${profile.label}…`);
+    this.patch(job, 'opening', `Membuka ${profile.label} dan AI Studio…`);
     const worker = this.workerPath();
     const result = await runProcess('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -137,13 +151,16 @@ export class JobController {
       return;
     }
     if (payload.needsLogin) {
+      job.windowHandle = Number(payload.hwnd) || undefined;
       this.patch(job, 'needs_login', payload.message || 'Akun perlu login Google');
       return;
     }
     if (!payload.ok) {
+      job.windowHandle = Number(payload.hwnd) || undefined;
       this.patch(job, 'error', payload.message || 'AI Studio gagal dipersiapkan');
       return;
     }
+
     job.windowHandle = Number(payload.hwnd) || undefined;
     this.patch(job, 'prepared', payload.message || 'Narasi sudah dimasukkan');
   }
@@ -156,7 +173,6 @@ export class JobController {
   }
 
   private workerPath() {
-    // Dev: repo/resources. Packaged: resourcesPath/automation.
     const devPath = path.join(app.getAppPath(), 'automation', 'aiStudioPrepare.ps1');
     if (fs.existsSync(devPath)) return devPath;
     return path.join(process.resourcesPath, 'automation', 'aiStudioPrepare.ps1');
