@@ -1,13 +1,15 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDownloadWindowState } from '../shared/downloadWindow.js';
 import { MAX_GEMINI_API_KEYS, MAX_GOOGLE_PROFILES } from '../shared/constants.js';
 import { discoverChromeProfiles } from './chromeProfiles.js';
 import { loadProfiles, removeProfile, saveProfile } from './profileRegistry.js';
+import { JobController } from './jobController.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const jobController = new JobController();
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -37,6 +39,18 @@ ipcMain.handle('voice-agent:list-profiles', () => loadProfiles());
 ipcMain.handle('voice-agent:discover-chrome-profiles', () => discoverChromeProfiles());
 ipcMain.handle('voice-agent:save-profile', (_event, profile) => saveProfile(profile));
 ipcMain.handle('voice-agent:remove-profile', (_event, slot) => removeProfile(Number(slot)));
+
+ipcMain.handle('voice-agent:choose-input-folder', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Pilih folder INPUT PART',
+    properties: ['openDirectory'],
+  });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+ipcMain.handle('voice-agent:scan-input', (_event, folder: string) => jobController.scan(folder));
+ipcMain.handle('voice-agent:start-workflow', (_event, folder: string) => jobController.start(folder));
+ipcMain.handle('voice-agent:stop-workflow', () => jobController.stop());
+ipcMain.handle('voice-agent:get-workflow', () => jobController.getSnapshot());
 
 app.whenReady().then(() => {
   createWindow();
