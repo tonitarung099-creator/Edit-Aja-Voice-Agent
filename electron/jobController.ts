@@ -46,6 +46,35 @@ export class JobController {
   private aborter: AbortController | null = null;
   private downloadBusy = false;
 
+  initialize() {
+    if (!app.isReady()) return;
+    const file = this.runtimePath();
+    if (!fs.existsSync(file)) return;
+
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as RuntimeSnapshot;
+      if (!saved || !Array.isArray(saved.jobs)) return;
+
+      saved.running = false;
+      for (const job of saved.jobs) {
+        if (job.status === 'downloading') {
+          job.status = 'generated';
+          job.message = 'Antrean download dipulihkan setelah aplikasi dibuka kembali.';
+          job.updatedAt = nowIso();
+        } else if (['opening','filling','prepared','selecting_voice','generating'].includes(job.status)) {
+          job.status = 'error';
+          job.message = 'Proses terputus saat aplikasi sebelumnya ditutup. Jalankan ulang proyek untuk job ini.';
+          job.updatedAt = nowIso();
+        }
+      }
+
+      this.snapshot = saved;
+      this.persist();
+    } catch {
+      // Corrupt runtime state must never prevent the desktop app from opening.
+    }
+  }
+
   getSnapshot(): RuntimeSnapshot {
     return JSON.parse(JSON.stringify(this.snapshot));
   }
@@ -382,7 +411,23 @@ export class JobController {
     return path.join(process.resourcesPath, 'automation', fileName);
   }
 
+  private runtimePath() {
+    return path.join(app.getPath('userData'), 'runtime.json');
+  }
+
+  private persist() {
+    if (!app.isReady()) return;
+    try {
+      const file = this.runtimePath();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(this.snapshot, null, 2), 'utf8');
+    } catch {
+      // Runtime persistence is protective; workflow execution should continue if disk write fails.
+    }
+  }
+
   private emit() {
+    this.persist();
     const payload = this.getSnapshot();
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send('voice-agent:runtime-update', payload);
