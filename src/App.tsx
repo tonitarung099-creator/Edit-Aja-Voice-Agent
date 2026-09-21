@@ -5,6 +5,7 @@ import {
   Save, Settings2, ShieldCheck, Sparkles, Square, Trash2, UserRoundPlus, Waves
 } from 'lucide-react';
 import { MAX_GEMINI_API_KEYS, MAX_GOOGLE_PROFILES } from '../shared/constants';
+import { DEFAULT_GEMINI_TTS_VOICE, GEMINI_TTS_VOICES } from '../shared/voices';
 
 type StoredProfile = {
   slot: number;
@@ -32,7 +33,7 @@ type RuntimeVoiceJob = {
   pairSide: 'A' | 'B';
   sourcePath: string;
   sourceName: string;
-  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'error' | 'stopped';
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'error' | 'stopped';
   message: string;
   windowHandle?: number;
   updatedAt: string;
@@ -61,8 +62,8 @@ function voLabel(slot:number) {
 }
 
 function statusTone(status?:RuntimeVoiceJob['status']) {
-  if (status === 'prepared') return 'good';
-  if (status === 'opening' || status === 'filling') return 'busy';
+  if (status === 'prepared' || status === 'generating') return 'good';
+  if (status === 'opening' || status === 'filling' || status === 'selecting_voice') return 'busy';
   if (status === 'needs_login') return 'warn';
   if (status === 'error' || status === 'stopped') return 'bad';
   return 'default';
@@ -76,6 +77,8 @@ function shortStatus(job?:RuntimeVoiceJob) {
     needs_login:'Need login',
     filling:'Filling',
     prepared:'Prepared',
+    selecting_voice:'Voice',
+    generating:'Generating',
     error:'Error',
     stopped:'Stopped',
   };
@@ -94,6 +97,7 @@ export default function App(){
   const [workflowMessage,setWorkflowMessage] = useState('');
   const [runtime,setRuntime] = useState<RuntimeSnapshot>(EMPTY_RUNTIME);
   const [inputFolder,setInputFolder] = useState('');
+  const [voiceName,setVoiceName] = useState<string>(DEFAULT_GEMINI_TTS_VOICE);
   const [downloadState,setDownloadState] = useState<DownloadState>({
     open:false, localTime:'--:--', label:'04:30–05:05 Asia/Jakarta', nextLabel:'Menunggu runtime'
   });
@@ -116,6 +120,8 @@ export default function App(){
       try {
         setProfiles(await window.voiceAgent.listProfiles());
         setDownloadState(await window.voiceAgent.getDownloadWindow());
+        const settings = await window.voiceAgent.getSettings();
+        setVoiceName(settings.voiceName || DEFAULT_GEMINI_TTS_VOICE);
         const snap = await window.voiceAgent.getWorkflow();
         setRuntime(snap);
         if (snap.inputFolder) setInputFolder(snap.inputFolder);
@@ -220,6 +226,18 @@ export default function App(){
     }
   }
 
+  async function changeVoice(nextVoice:string) {
+    setVoiceName(nextVoice);
+    if (!window.voiceAgent) return;
+    try {
+      const saved = await window.voiceAgent.saveSettings({voiceName:nextVoice});
+      setVoiceName(saved.voiceName);
+      setWorkflowMessage(`Voice diatur ke ${saved.voiceName}.`);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : 'Gagal menyimpan voice.');
+    }
+  }
+
   async function startWorkflow() {
     if (!window.voiceAgent) return;
     if (!inputFolder) {
@@ -230,7 +248,7 @@ export default function App(){
       setWorkflowMessage('Menjalankan batch pertama: 3 Part / 6 akun…');
       const finalState = await window.voiceAgent.startWorkflow(inputFolder);
       setRuntime(finalState);
-      setWorkflowMessage('Tahap prepare batch pertama selesai. Voice selection + Generate adalah tahap berikutnya.');
+      setWorkflowMessage('Batch pertama sudah diproses sampai perintah Generate. Deteksi selesai + batch berikutnya adalah tahap berikutnya.');
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : 'Workflow gagal dijalankan.');
     }
@@ -247,8 +265,8 @@ export default function App(){
   }
 
   const configuredCount = profiles.length;
-  const preparedCount = runtime.jobs.filter(j=>j.status==='prepared').length;
-  const activeCount = runtime.jobs.filter(j=>j.status==='opening'||j.status==='filling').length;
+  const generatingCount = runtime.jobs.filter(j=>j.status==='generating').length;
+  const activeCount = runtime.jobs.filter(j=>['opening','filling','selecting_voice'].includes(j.status)).length;
   const issueCount = runtime.jobs.filter(j=>j.status==='error'||j.status==='needs_login').length;
 
   return <div className="app-shell">
@@ -299,6 +317,7 @@ export default function App(){
             <span>INPUT PART</span>
             <b>{inputFolder || 'Belum memilih folder'}</b>
           </div>
+          <label className="voice-picker"><span>VOICE</span><select value={voiceName} onChange={e=>changeVoice(e.target.value)} disabled={runtime.running}>{GEMINI_TTS_VOICES.map(v=><option key={v} value={v}>{v}</option>)}</select></label>
           <Pill tone={runtime.running?'busy':'default'}>{runtime.running?'Workflow running':'Ready'}</Pill>
         </section>
 
@@ -307,7 +326,7 @@ export default function App(){
         <section className="stats-grid">
           <div className="stat"><Gauge/><div><span>Parts</span><b>{groupedJobs.length}</b><small>{runtime.jobs.length} voice jobs</small></div></div>
           <div className="stat"><CircleUserRound/><div><span>Accounts</span><b>{configuredCount}/50</b><small>25 pasangan maksimum</small></div></div>
-          <div className="stat"><CheckCircle2/><div><span>Prepared</span><b>{preparedCount}</b><small>dari {runtime.jobs.length || 0} VO</small></div></div>
+          <div className="stat"><CheckCircle2/><div><span>Generating</span><b>{generatingCount}</b><small>voice {voiceName}</small></div></div>
           <div className="stat"><Download/><div><span>Download</span><b>{downloadState.open ? 'OPEN' : 'LOCKED'}</b><small>{downloadState.nextLabel}</small></div></div>
         </section>
 
@@ -329,8 +348,8 @@ export default function App(){
             <div className="tr th"><span>PART</span><span>ACCOUNT A</span><span>ACCOUNT B</span><span>STATUS</span><span>SOURCE</span></div>
             {groupedJobs.map(row=><div className="tr" key={row.partNumber}>
               <span className="part">Part {String(row.partNumber).padStart(2,'0')}</span>
-              <span><Pill tone={statusTone(row.a)}>{row.a?.status==='opening'&&<LoaderCircle size={11}/>} {row.a?voLabel(row.a.accountSlot):'—'} · {shortStatus(row.a)}</Pill></span>
-              <span><Pill tone={statusTone(row.b)}>{row.b?.status==='opening'&&<LoaderCircle size={11}/>} {row.b?voLabel(row.b.accountSlot):'—'} · {shortStatus(row.b)}</Pill></span>
+              <span><Pill tone={statusTone(row.a)}>{(['opening','selecting_voice'].includes(row.a?.status || ''))&&<LoaderCircle size={11}/>}  {row.a?voLabel(row.a.accountSlot):'—'} · {shortStatus(row.a)}</Pill></span>
+              <span><Pill tone={statusTone(row.b)}>{(['opening','selecting_voice'].includes(row.b?.status || ''))&&<LoaderCircle size={11}/>}  {row.b?voLabel(row.b.accountSlot):'—'} · {shortStatus(row.b)}</Pill></span>
               <span className="job-detail">{row.a?.message || row.b?.message || 'Menunggu'}</span>
               <span className="source-name" title={row.sourceName}>{row.sourceName}</span>
             </div>)}
@@ -389,8 +408,8 @@ export default function App(){
       <div className="agent-feed">
         <div className="agent-card"><Sparkles size={17}/><p>Browser Controller V14-compatible sudah tersambung. Agent akan memakai kontrol lokal lebih dulu.</p></div>
         <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
-        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? 'Sedang menjalankan batch pertama.' : `${preparedCount} VO prepared, ${issueCount} issue.`}</p></div>
-        <div className="agent-msg"><span>Next engine step</span><p>Pilih voice, tekan Generate, deteksi selesai, lalu jalankan batch berikutnya.</p></div>
+        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan batch dengan voice ${voiceName}.` : `${generatingCount} VO sudah dikirim ke Generate, ${issueCount} issue.`}</p></div>
+        <div className="agent-msg"><span>Next engine step</span><p>Deteksi audio selesai, minimalkan batch, lanjut batch berikutnya, lalu antrekan download.</p></div>
       </div>
       <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Chat Agent belum dieksekusi; tool layer sedang dibangun bertahap.</small></div>
     </aside>
