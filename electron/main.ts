@@ -56,6 +56,7 @@ ipcMain.handle('voice-agent:stop-workflow', () => jobController.stop());
 ipcMain.handle('voice-agent:get-workflow', () => jobController.getSnapshot());
 
 app.whenReady().then(() => {
+  jobController.initialize();
   createWindow();
 
   // Automatic scheduler. It is intentionally harmless outside 04:30–05:05 WIB.
