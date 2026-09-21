@@ -6,6 +6,8 @@ export type RuntimeJobStatus =
   | 'prepared'
   | 'selecting_voice'
   | 'generating'
+  | 'generated'
+  | 'provider_limited'
   | 'error'
   | 'stopped';
 
