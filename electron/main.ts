@@ -57,6 +57,13 @@ ipcMain.handle('voice-agent:get-workflow', () => jobController.getSnapshot());
 
 app.whenReady().then(() => {
   createWindow();
+
+  // Automatic scheduler. It is intentionally harmless outside 04:30–05:05 WIB.
+  void jobController.tickDownloadScheduler();
+  setInterval(() => {
+    void jobController.tickDownloadScheduler();
+  }, 15000);
+
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
