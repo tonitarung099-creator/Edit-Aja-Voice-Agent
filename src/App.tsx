@@ -33,9 +33,10 @@ type RuntimeVoiceJob = {
   pairSide: 'A' | 'B';
   sourcePath: string;
   sourceName: string;
-  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'generated' | 'provider_limited' | 'error' | 'stopped';
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'generated' | 'downloading' | 'downloaded' | 'download_error' | 'provider_limited' | 'error' | 'stopped';
   message: string;
   windowHandle?: number;
+  outputPath?: string;
   updatedAt: string;
 };
 
@@ -62,10 +63,10 @@ function voLabel(slot:number) {
 }
 
 function statusTone(status?:RuntimeVoiceJob['status']) {
-  if (status === 'prepared' || status === 'generated') return 'good';
-  if (status === 'opening' || status === 'filling' || status === 'selecting_voice' || status === 'generating') return 'busy';
+  if (status === 'prepared' || status === 'generated' || status === 'downloaded') return 'good';
+  if (status === 'opening' || status === 'filling' || status === 'selecting_voice' || status === 'generating' || status === 'downloading') return 'busy';
   if (status === 'needs_login' || status === 'provider_limited') return 'warn';
-  if (status === 'error' || status === 'stopped') return 'bad';
+  if (status === 'error' || status === 'stopped' || status === 'download_error') return 'bad';
   return 'default';
 }
 
@@ -79,7 +80,10 @@ function shortStatus(job?:RuntimeVoiceJob) {
     prepared:'Prepared',
     selecting_voice:'Voice',
     generating:'Generating',
-    generated:'Generated',
+    generated:'Queued',
+    downloading:'Downloading',
+    downloaded:'Downloaded',
+    download_error:'Download error',
     provider_limited:'Limited',
     error:'Error',
     stopped:'Stopped',
@@ -269,8 +273,10 @@ export default function App(){
   const configuredCount = profiles.length;
   const generatingCount = runtime.jobs.filter(j=>j.status==='generating').length;
   const generatedCount = runtime.jobs.filter(j=>j.status==='generated').length;
-  const activeCount = runtime.jobs.filter(j=>['opening','filling','selecting_voice','generating'].includes(j.status)).length;
-  const issueCount = runtime.jobs.filter(j=>['error','needs_login','provider_limited'].includes(j.status)).length;
+  const downloadingCount = runtime.jobs.filter(j=>j.status==='downloading').length;
+  const downloadedCount = runtime.jobs.filter(j=>j.status==='downloaded').length;
+  const activeCount = runtime.jobs.filter(j=>['opening','filling','selecting_voice','generating','downloading'].includes(j.status)).length;
+  const issueCount = runtime.jobs.filter(j=>['error','needs_login','provider_limited','download_error'].includes(j.status)).length;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -329,8 +335,8 @@ export default function App(){
         <section className="stats-grid">
           <div className="stat"><Gauge/><div><span>Parts</span><b>{groupedJobs.length}</b><small>{runtime.jobs.length} voice jobs</small></div></div>
           <div className="stat"><CircleUserRound/><div><span>Accounts</span><b>{configuredCount}/50</b><small>25 pasangan maksimum</small></div></div>
-          <div className="stat"><CheckCircle2/><div><span>Generated</span><b>{generatedCount}</b><small>{generatingCount} masih generating</small></div></div>
-          <div className="stat"><Download/><div><span>Download</span><b>{downloadState.open ? 'OPEN' : 'LOCKED'}</b><small>{downloadState.nextLabel}</small></div></div>
+          <div className="stat"><CheckCircle2/><div><span>Generated Queue</span><b>{generatedCount}</b><small>{generatingCount} masih generating</small></div></div>
+          <div className="stat"><Download/><div><span>Downloaded</span><b>{downloadedCount}</b><small>{downloadingCount ? `${downloadingCount} downloading` : downloadState.nextLabel}</small></div></div>
         </section>
 
         <section className="panel">
@@ -351,8 +357,8 @@ export default function App(){
             <div className="tr th"><span>PART</span><span>ACCOUNT A</span><span>ACCOUNT B</span><span>STATUS</span><span>SOURCE</span></div>
             {groupedJobs.map(row=><div className="tr" key={row.partNumber}>
               <span className="part">Part {String(row.partNumber).padStart(2,'0')}</span>
-              <span><Pill tone={statusTone(row.a)}>{(['opening','selecting_voice'].includes(row.a?.status || ''))&&<LoaderCircle size={11}/>}  {row.a?voLabel(row.a.accountSlot):'—'} · {shortStatus(row.a)}</Pill></span>
-              <span><Pill tone={statusTone(row.b)}>{(['opening','selecting_voice'].includes(row.b?.status || ''))&&<LoaderCircle size={11}/>}  {row.b?voLabel(row.b.accountSlot):'—'} · {shortStatus(row.b)}</Pill></span>
+              <span><Pill tone={statusTone(row.a)}>{(['opening','selecting_voice','downloading'].includes(row.a?.status || ''))&&<LoaderCircle size={11}/>}  {row.a?voLabel(row.a.accountSlot):'—'} · {shortStatus(row.a)}</Pill></span>
+              <span><Pill tone={statusTone(row.b)}>{(['opening','selecting_voice','downloading'].includes(row.b?.status || ''))&&<LoaderCircle size={11}/>}  {row.b?voLabel(row.b.accountSlot):'—'} · {shortStatus(row.b)}</Pill></span>
               <span className="job-detail">{row.a?.message || row.b?.message || 'Menunggu'}</span>
               <span className="source-name" title={row.sourceName}>{row.sourceName}</span>
             </div>)}
@@ -411,8 +417,8 @@ export default function App(){
       <div className="agent-feed">
         <div className="agent-card"><Sparkles size={17}/><p>Browser Controller V14-compatible sudah tersambung. Agent akan memakai kontrol lokal lebih dulu.</p></div>
         <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
-        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan/memantau batch dengan voice ${voiceName}.` : `${generatedCount} VO generated, ${issueCount} issue.`}</p></div>
-        <div className="agent-msg"><span>Next engine step</span><p>Download Manager akan memanggil kembali window generated hanya pada 04:30–05:05 WIB.</p></div>
+        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? `Menjalankan/memantau batch dengan voice ${voiceName}.` : `${generatedCount} antre download, ${downloadedCount} sudah tersimpan, ${issueCount} issue.`}</p></div>
+        <div className="agent-msg"><span>Download rule</span><p>Scheduler otomatis mengecek antrean setiap 15 detik dan hanya boleh memulai download pada 04:30–sebelum 05:05 WIB.</p></div>
       </div>
       <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Chat Agent belum dieksekusi; tool layer sedang dibangun bertahap.</small></div>
     </aside>
