@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import { loadProfiles } from './profileRegistry.js';
+import { loadSettings } from './settingsStore.js';
 import { runProcess } from './processUtils.js';
 import { scanPartFolder } from './inputScanner.js';
 import { MAX_GOOGLE_PROFILES } from '../shared/constants.js';
@@ -11,6 +12,15 @@ const TARGET_URL = 'https://aistudio.google.com/generate-speech?model=gemini-2.5
 const PREPARE_BATCH_SIZE = 6;
 
 function nowIso() { return new Date().toISOString(); }
+
+function parseJsonPayload(stdout: string) {
+  const lines = stdout.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  for (const line of lines.reverse()) {
+    if (!line.startsWith('{')) continue;
+    try { return JSON.parse(line); } catch {}
+  }
+  return null;
+}
 
 export class JobController {
   private snapshot: RuntimeSnapshot = {
@@ -75,7 +85,7 @@ export class JobController {
 
     const batch = this.snapshot.jobs.slice(0, PREPARE_BATCH_SIZE);
     for (const job of this.snapshot.jobs.slice(PREPARE_BATCH_SIZE)) {
-      job.message = 'Menunggu batch berikutnya setelah tahap Generate aktif';
+      job.message = 'Menunggu batch berikutnya setelah deteksi Generate selesai aktif';
       job.updatedAt = nowIso();
     }
 
@@ -85,10 +95,11 @@ export class JobController {
     this.emit();
 
     try {
-      // V14-compatible: launch sequentially so HWND detection cannot race.
+      // Launch sequentially so HWND detection cannot race. Once Generate is clicked,
+      // that window may keep working while the next account is prepared.
       for (let i = 0; i < batch.length; i++) {
         if (this.aborter.signal.aborted) break;
-        await this.prepareOne(batch[i], i + 1, this.aborter.signal);
+        await this.prepareAndGenerateOne(batch[i], i + 1, this.aborter.signal);
       }
     } finally {
       this.snapshot.running = false;
@@ -101,7 +112,7 @@ export class JobController {
   stop() {
     this.aborter?.abort();
     for (const job of this.snapshot.jobs) {
-      if (job.status === 'opening' || job.status === 'filling') {
+      if (['opening','filling','prepared','selecting_voice'].includes(job.status)) {
         job.status = 'stopped';
         job.message = 'Dihentikan pengguna';
         job.updatedAt = nowIso();
@@ -112,7 +123,7 @@ export class JobController {
     return this.getSnapshot();
   }
 
-  private async prepareOne(job: RuntimeVoiceJob, layoutSlot: number, signal: AbortSignal) {
+  private async prepareAndGenerateOne(job: RuntimeVoiceJob, layoutSlot: number, signal: AbortSignal) {
     const profile = loadProfiles().find(p => p.slot === job.accountSlot && p.enabled);
     if (!profile) {
       this.patch(job, 'error', 'Chrome profile tidak ditemukan.');
@@ -120,10 +131,9 @@ export class JobController {
     }
 
     this.patch(job, 'opening', `Membuka ${profile.label} dan AI Studio…`);
-    const worker = this.workerPath();
-    const result = await runProcess('powershell.exe', [
+    const prepareResult = await runProcess('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass',
-      '-File', worker,
+      '-File', this.workerPath('aiStudioPrepare.ps1'),
       '-ProfileDirectory', profile.chromeProfileName,
       '-LayoutSlot', String(layoutSlot),
       '-InputFile', job.sourcePath,
@@ -139,30 +149,53 @@ export class JobController {
       return;
     }
 
-    const lines = result.stdout.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    let payload: any = null;
-    for (const line of lines.reverse()) {
-      if (!line.startsWith('{')) continue;
-      try { payload = JSON.parse(line); break; } catch {}
-    }
-
-    if (!payload) {
-      this.patch(job, 'error', result.stderr.trim() || `Worker berhenti dengan kode ${result.exitCode}`);
-      return;
-    }
-    if (payload.needsLogin) {
-      job.windowHandle = Number(payload.hwnd) || undefined;
-      this.patch(job, 'needs_login', payload.message || 'Akun perlu login Google');
-      return;
-    }
-    if (!payload.ok) {
-      job.windowHandle = Number(payload.hwnd) || undefined;
-      this.patch(job, 'error', payload.message || 'AI Studio gagal dipersiapkan');
+    const prepare = parseJsonPayload(prepareResult.stdout);
+    if (!prepare) {
+      this.patch(job, 'error', prepareResult.stderr.trim() || `Prepare worker berhenti dengan kode ${prepareResult.exitCode}`);
       return;
     }
 
-    job.windowHandle = Number(payload.hwnd) || undefined;
-    this.patch(job, 'prepared', payload.message || 'Narasi sudah dimasukkan');
+    job.windowHandle = Number(prepare.hwnd) || undefined;
+    if (prepare.needsLogin) {
+      this.patch(job, 'needs_login', prepare.message || 'Akun perlu login Google');
+      return;
+    }
+    if (!prepare.ok || !job.windowHandle) {
+      this.patch(job, 'error', prepare.message || 'AI Studio gagal dipersiapkan');
+      return;
+    }
+
+    this.patch(job, 'prepared', prepare.message || 'Narasi sudah dimasukkan');
+
+    const voiceName = loadSettings().voiceName;
+    this.patch(job, 'selecting_voice', `Memilih voice ${voiceName}…`);
+    const generateResult = await runProcess('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass',
+      '-File', this.workerPath('aiStudioGenerate.ps1'),
+      '-Hwnd', String(job.windowHandle),
+      '-VoiceName', voiceName,
+    ], signal).catch(error => ({
+      exitCode: -1,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+    }));
+
+    if (signal.aborted) {
+      this.patch(job, 'stopped', 'Dihentikan pengguna');
+      return;
+    }
+
+    const generated = parseJsonPayload(generateResult.stdout);
+    if (!generated) {
+      this.patch(job, 'error', generateResult.stderr.trim() || `Generate worker berhenti dengan kode ${generateResult.exitCode}`);
+      return;
+    }
+    if (!generated.ok || !generated.generateClicked) {
+      this.patch(job, 'error', generated.message || 'Voice/Generate tidak berhasil dijalankan');
+      return;
+    }
+
+    this.patch(job, 'generating', generated.message || 'Generate sedang berjalan');
   }
 
   private patch(job: RuntimeVoiceJob, status: RuntimeVoiceJob['status'], message: string) {
@@ -172,10 +205,10 @@ export class JobController {
     this.emit();
   }
 
-  private workerPath() {
-    const devPath = path.join(app.getAppPath(), 'automation', 'aiStudioPrepare.ps1');
+  private workerPath(fileName: string) {
+    const devPath = path.join(app.getAppPath(), 'automation', fileName);
     if (fs.existsSync(devPath)) return devPath;
-    return path.join(process.resourcesPath, 'automation', 'aiStudioPrepare.ps1');
+    return path.join(process.resourcesPath, 'automation', fileName);
   }
 
   private emit() {
