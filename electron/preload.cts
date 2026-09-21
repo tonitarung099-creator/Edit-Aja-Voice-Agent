@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('voiceAgent', {
   discoverChromeProfiles: () => ipcRenderer.invoke('voice-agent:discover-chrome-profiles'),
   saveProfile: (profile: unknown) => ipcRenderer.invoke('voice-agent:save-profile', profile),
   removeProfile: (slot: number) => ipcRenderer.invoke('voice-agent:remove-profile', slot),
+  getSettings: () => ipcRenderer.invoke('voice-agent:get-settings'),
+  saveSettings: (settings: unknown) => ipcRenderer.invoke('voice-agent:save-settings', settings),
 
   chooseInputFolder: () => ipcRenderer.invoke('voice-agent:choose-input-folder'),
   scanInput: (folder: string) => ipcRenderer.invoke('voice-agent:scan-input', folder),
