@@ -23,6 +23,16 @@ function Write-Result([bool]$Ok,[string]$Message,[string]$OutputPath='') {
     [pscustomobject]@{ok=$Ok;message=$Message;outputPath=$OutputPath}|ConvertTo-Json -Compress
 }
 
+function Assert-DownloadWindow {
+    # This application is designed for the user's WIB/Asia-Jakarta workstation.
+    # A second authoritative guard also exists in the TypeScript scheduler.
+    $now=Get-Date
+    $minutes=($now.Hour*60)+$now.Minute
+    if($minutes -lt 270 -or $minutes -ge 305){
+        throw 'DOWNLOAD_LOCKED: download hanya boleh dimulai antara 04:30 dan sebelum 05:05.'
+    }
+}
+
 function Get-Elements([IntPtr]$Handle) {
     $root=[System.Windows.Automation.AutomationElement]::FromHandle($Handle)
     if(-not $root){ return @() }
@@ -98,6 +108,8 @@ function Find-NewDownload([string]$Dir,[datetime]$Since,[int]$TimeoutSec=120) {
 }
 
 try{
+    Assert-DownloadWindow
+
     $handle=[IntPtr]::new($Hwnd)
     if(-not [EditAjaDownloadWin32]::IsWindow($handle)){ throw 'Window hasil Generate sudah tidak tersedia.' }
 
@@ -121,6 +133,9 @@ try{
         if(-not $button){ Start-Sleep -Milliseconds 600 }
     }
     if(-not $button){ throw 'Tombol Download audio tidak ditemukan.' }
+
+    # Re-check immediately before the irreversible download click.
+    Assert-DownloadWindow
 
     $downloadDir=Get-DownloadDirectory
     $clickedAt=Get-Date
