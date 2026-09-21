@@ -33,6 +33,22 @@ type RuntimeSnapshot = {
   jobs: RuntimeVoiceJob[];
 };
 
+type ApiKeySummary = {
+  slot: number;
+  label: string;
+  configured: boolean;
+  maskedKey: string;
+  status: 'empty' | 'untested' | 'ready' | 'invalid' | 'provider_limited' | 'error';
+  lastMessage: string;
+  updatedAt: string | null;
+};
+
+type AgentReply = {
+  text: string;
+  source: 'local' | 'gemini';
+  action: 'status' | 'scan' | 'start' | 'stop' | 'set_voice' | 'download_queue' | 'none';
+};
+
 declare global {
   interface Window {
     voiceAgent?: {
@@ -44,6 +60,12 @@ declare global {
       removeProfile: (slot: number) => Promise<StoredProfile[]>;
       getSettings: () => Promise<{voiceName:string}>;
       saveSettings: (settings: {voiceName:string}) => Promise<{voiceName:string}>;
+
+      listApiKeys: () => Promise<ApiKeySummary[]>;
+      importApiKeys: (keys: string[]) => Promise<ApiKeySummary[]>;
+      removeApiKey: (slot: number) => Promise<ApiKeySummary[]>;
+      testApiKey: (slot: number) => Promise<ApiKeySummary[]>;
+      agentChat: (message: string) => Promise<AgentReply>;
 
       chooseInputFolder: () => Promise<string | null>;
       scanInput: (folder: string) => Promise<RuntimeSnapshot>;
