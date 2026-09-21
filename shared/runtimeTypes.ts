@@ -7,6 +7,9 @@ export type RuntimeJobStatus =
   | 'selecting_voice'
   | 'generating'
   | 'generated'
+  | 'downloading'
+  | 'downloaded'
+  | 'download_error'
   | 'provider_limited'
   | 'error'
   | 'stopped';
@@ -21,6 +24,7 @@ export interface RuntimeVoiceJob {
   status: RuntimeJobStatus;
   message: string;
   windowHandle?: number;
+  outputPath?: string;
   updatedAt: string;
 }
 
