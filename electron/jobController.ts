@@ -5,6 +5,7 @@ import { loadProfiles } from './profileRegistry.js';
 import { loadSettings } from './settingsStore.js';
 import { runProcess } from './processUtils.js';
 import { scanPartFolder } from './inputScanner.js';
+import { getDownloadWindowState } from '../shared/downloadWindow.js';
 import { MAX_GOOGLE_PROFILES } from '../shared/constants.js';
 import type { RuntimeSnapshot, RuntimeVoiceJob } from '../shared/runtimeTypes.js';
 
@@ -43,6 +44,7 @@ export class JobController {
     jobs: [],
   };
   private aborter: AbortController | null = null;
+  private downloadBusy = false;
 
   getSnapshot(): RuntimeSnapshot {
     return JSON.parse(JSON.stringify(this.snapshot));
@@ -51,7 +53,7 @@ export class JobController {
   scan(inputFolder: string) {
     const parts = scanPartFolder(inputFolder);
     if (parts.length > MAX_GOOGLE_PROFILES / 2) {
-      throw new Error(`Satu siklus maksimal ${MAX_GOOGLE_PROFILES / 2} Part karena setiap Part membutuhkan 2 akun unik. Part sisanya akan didukung setelah sistem download/resume selesai.`);
+      throw new Error(`Satu siklus maksimal ${MAX_GOOGLE_PROFILES / 2} Part karena setiap Part membutuhkan 2 akun unik.`);
     }
 
     const profiles = new Map(loadProfiles().filter(p => p.enabled).map(p => [p.slot, p]));
@@ -117,7 +119,8 @@ export class JobController {
         }
         this.emit();
 
-        // Sequential launch avoids HWND races. Previous windows generate in parallel.
+        // Launch sequentially so new Chrome HWND detection cannot race.
+        // After Generate is clicked, windows in this batch work in parallel.
         for (let i = 0; i < batch.length; i++) {
           if (this.aborter.signal.aborted) break;
           await this.prepareAndGenerateOne(batch[i], i + 1, this.aborter.signal);
@@ -130,6 +133,10 @@ export class JobController {
       this.snapshot.running = false;
       this.aborter = null;
       this.emit();
+
+      // If generation happens to finish inside the allowed download window,
+      // start draining the queue immediately.
+      void this.tickDownloadScheduler();
     }
     return this.getSnapshot();
   }
@@ -145,6 +152,72 @@ export class JobController {
     }
     this.snapshot.running = false;
     this.emit();
+    return this.getSnapshot();
+  }
+
+  async tickDownloadScheduler() {
+    if (this.downloadBusy || this.snapshot.running) return this.getSnapshot();
+
+    const windowState = getDownloadWindowState();
+    if (!windowState.open) return this.getSnapshot();
+
+    const candidates = this.snapshot.jobs.filter(j => j.status === 'generated');
+    if (!candidates.length) return this.getSnapshot();
+
+    this.downloadBusy = true;
+    try {
+      for (const job of candidates) {
+        // Authoritative guard: no new download may start at or after 05:05.
+        if (!getDownloadWindowState().open) break;
+
+        if (!job.windowHandle) {
+          this.patch(job, 'download_error', 'Window hasil Generate tidak tersedia untuk download.');
+          continue;
+        }
+        if (!this.snapshot.inputFolder) {
+          this.patch(job, 'download_error', 'Folder proyek tidak tersedia.');
+          continue;
+        }
+
+        const outputDir = path.join(this.snapshot.inputFolder, 'VOICE OUTPUT');
+        const outputBase = path.join(
+          outputDir,
+          `Part${String(job.partNumber).padStart(2,'0')}-VO${String(job.accountSlot).padStart(2,'0')}`
+        );
+
+        this.patch(job, 'downloading', 'Jendela download aktif. Mengunduh audio…');
+        const result = await runProcess('powershell.exe', [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass',
+          '-File', this.workerPath('aiStudioDownload.ps1'),
+          '-Hwnd', String(job.windowHandle),
+          '-OutputBase', outputBase,
+        ]).catch(error => ({
+          exitCode: -1,
+          stdout: '',
+          stderr: error instanceof Error ? error.message : String(error),
+        }));
+
+        const payload = parseJsonPayload(result.stdout);
+        if (payload?.ok) {
+          job.outputPath = String(payload.outputPath || '');
+          this.patch(job, 'downloaded', payload.message || 'Download selesai.');
+          continue;
+        }
+
+        const message = String(payload?.message || result.stderr.trim() || 'Download gagal.');
+        if (message.includes('DOWNLOAD_LOCKED')) {
+          // The exact time boundary may have been crossed after this tick started.
+          // Keep it queued for tomorrow instead of marking it as a failure.
+          this.patch(job, 'generated', 'Jendela 05:05 sudah ditutup. Menunggu 04:30 berikutnya.');
+          break;
+        }
+
+        this.patch(job, 'download_error', message);
+      }
+    } finally {
+      this.downloadBusy = false;
+    }
+
     return this.getSnapshot();
   }
 
