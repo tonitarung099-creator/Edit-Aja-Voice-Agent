@@ -1,7 +1,7 @@
 {
   "name": "edit-aja-voice-agent",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Modern Windows desktop controller for Edit Aja voice production workflows.",
   "main": "dist-electron/electron/main.js",
   "type": "module",
@@ -37,6 +37,13 @@
     "appId": "id.editaja.voiceagent",
     "productName": "Edit Aja Voice Agent",
     "files": ["dist/**/*", "dist-electron/**/*", "package.json"],
+    "extraResources": [
+      {
+        "from": "automation",
+        "to": "automation",
+        "filter": ["**/*"]
+      }
+    ],
     "directories": {"output": "release"},
     "win": {"target": ["nsis", "portable"]}
   }
