@@ -19,7 +19,7 @@ type RuntimeVoiceJob = {
   pairSide: 'A' | 'B';
   sourcePath: string;
   sourceName: string;
-  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'error' | 'stopped';
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'selecting_voice' | 'generating' | 'error' | 'stopped';
   message: string;
   windowHandle?: number;
   updatedAt: string;
@@ -41,6 +41,8 @@ declare global {
       discoverChromeProfiles: () => Promise<ChromeProfileCandidate[]>;
       saveProfile: (profile: StoredProfile) => Promise<StoredProfile[]>;
       removeProfile: (slot: number) => Promise<StoredProfile[]>;
+      getSettings: () => Promise<{voiceName:string}>;
+      saveSettings: (settings: {voiceName:string}) => Promise<{voiceName:string}>;
 
       chooseInputFolder: () => Promise<string | null>;
       scanInput: (folder: string) => Promise<RuntimeSnapshot>;
