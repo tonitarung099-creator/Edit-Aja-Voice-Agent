@@ -11,7 +11,7 @@
     "build:electron": "tsc -p electron/tsconfig.json",
     "build": "npm run build:web && npm run build:electron",
     "preview": "vite preview",
-    "dist": "npm run build && electron-builder --win nsis portable"
+    "dist": "npm run build && electron-builder --win nsis portable --publish never"
   },
   "dependencies": {
     "@google/genai": "^1.27.0",
