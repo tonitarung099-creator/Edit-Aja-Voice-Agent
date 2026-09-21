@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
-  Bot, CircleUserRound, CloudCog, Download, Gauge, KeyRound, Layers3,
-  Play, RefreshCw, Save, Settings2, ShieldCheck, Sparkles, Square,
-  Trash2, UserRoundPlus, Waves
+  AlertTriangle, Bot, CheckCircle2, CircleUserRound, CloudCog, Download,
+  FolderOpen, Gauge, KeyRound, Layers3, LoaderCircle, Play, RefreshCw,
+  Save, Settings2, ShieldCheck, Sparkles, Square, Trash2, UserRoundPlus, Waves
 } from 'lucide-react';
-import { planJobs } from '../shared/pairing';
 import { MAX_GEMINI_API_KEYS, MAX_GOOGLE_PROFILES } from '../shared/constants';
 
 type StoredProfile = {
@@ -26,7 +25,32 @@ type DownloadState = {
   nextLabel: string;
 };
 
-const demoJobs = planJobs(Array.from({length: 15}, (_,i) => i + 1));
+type RuntimeVoiceJob = {
+  id: string;
+  partNumber: number;
+  accountSlot: number;
+  pairSide: 'A' | 'B';
+  sourcePath: string;
+  sourceName: string;
+  status: 'waiting' | 'opening' | 'needs_login' | 'filling' | 'prepared' | 'error' | 'stopped';
+  message: string;
+  windowHandle?: number;
+  updatedAt: string;
+};
+
+type RuntimeSnapshot = {
+  running: boolean;
+  inputFolder: string | null;
+  startedAt: string | null;
+  jobs: RuntimeVoiceJob[];
+};
+
+const EMPTY_RUNTIME:RuntimeSnapshot = {
+  running:false,
+  inputFolder:null,
+  startedAt:null,
+  jobs:[],
+};
 
 function Pill({children, tone='default'}:{children:ReactNode;tone?:string}) {
   return <span className={`pill ${tone}`}>{children}</span>;
@@ -34,6 +58,28 @@ function Pill({children, tone='default'}:{children:ReactNode;tone?:string}) {
 
 function voLabel(slot:number) {
   return `VO${String(slot).padStart(2, '0')}`;
+}
+
+function statusTone(status?:RuntimeVoiceJob['status']) {
+  if (status === 'prepared') return 'good';
+  if (status === 'opening' || status === 'filling') return 'busy';
+  if (status === 'needs_login') return 'warn';
+  if (status === 'error' || status === 'stopped') return 'bad';
+  return 'default';
+}
+
+function shortStatus(job?:RuntimeVoiceJob) {
+  if (!job) return '—';
+  const labels:Record<RuntimeVoiceJob['status'],string> = {
+    waiting:'Waiting',
+    opening:'Opening',
+    needs_login:'Need login',
+    filling:'Filling',
+    prepared:'Prepared',
+    error:'Error',
+    stopped:'Stopped',
+  };
+  return labels[job.status];
 }
 
 export default function App(){
@@ -45,12 +91,24 @@ export default function App(){
   const [editingLabel,setEditingLabel] = useState(voLabel(1));
   const [editingChrome,setEditingChrome] = useState('');
   const [accountMessage,setAccountMessage] = useState('');
+  const [workflowMessage,setWorkflowMessage] = useState('');
+  const [runtime,setRuntime] = useState<RuntimeSnapshot>(EMPTY_RUNTIME);
+  const [inputFolder,setInputFolder] = useState('');
   const [downloadState,setDownloadState] = useState<DownloadState>({
     open:false, localTime:'--:--', label:'04:30–05:05 Asia/Jakarta', nextLabel:'Menunggu runtime'
   });
 
-  const visibleJobs = useMemo(() => demoJobs.slice(0,12), []);
   const profileMap = useMemo(() => new Map(profiles.map(p => [p.slot,p])), [profiles]);
+  const groupedJobs = useMemo(() => {
+    const map = new Map<number,{partNumber:number;a?:RuntimeVoiceJob;b?:RuntimeVoiceJob;sourceName:string}>();
+    for (const job of runtime.jobs) {
+      const row = map.get(job.partNumber) || {partNumber:job.partNumber,sourceName:job.sourceName};
+      if (job.pairSide === 'A') row.a = job;
+      else row.b = job;
+      map.set(job.partNumber,row);
+    }
+    return [...map.values()].sort((a,b)=>a.partNumber-b.partNumber);
+  }, [runtime.jobs]);
 
   useEffect(() => {
     const refresh = async () => {
@@ -58,10 +116,17 @@ export default function App(){
       try {
         setProfiles(await window.voiceAgent.listProfiles());
         setDownloadState(await window.voiceAgent.getDownloadWindow());
+        const snap = await window.voiceAgent.getWorkflow();
+        setRuntime(snap);
+        if (snap.inputFolder) setInputFolder(snap.inputFolder);
+        window.voiceAgent.onRuntimeUpdate(next => setRuntime(next));
       } catch {}
     };
     refresh();
-    const timer = window.setInterval(refresh, 60000);
+    const timer = window.setInterval(async () => {
+      if (!window.voiceAgent) return;
+      try { setDownloadState(await window.voiceAgent.getDownloadWindow()); } catch {}
+    }, 60000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -128,7 +193,63 @@ export default function App(){
     }
   }
 
+  async function chooseInputFolder() {
+    if (!window.voiceAgent) return;
+    const folder = await window.voiceAgent.chooseInputFolder();
+    if (!folder) return;
+    setInputFolder(folder);
+    setWorkflowMessage('');
+    try {
+      setRuntime(await window.voiceAgent.scanInput(folder));
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : 'Scan input gagal.');
+    }
+  }
+
+  async function scanInput() {
+    if (!window.voiceAgent) return;
+    if (!inputFolder) {
+      await chooseInputFolder();
+      return;
+    }
+    try {
+      setWorkflowMessage('');
+      setRuntime(await window.voiceAgent.scanInput(inputFolder));
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : 'Scan input gagal.');
+    }
+  }
+
+  async function startWorkflow() {
+    if (!window.voiceAgent) return;
+    if (!inputFolder) {
+      setWorkflowMessage('Pilih folder INPUT PART terlebih dahulu.');
+      return;
+    }
+    try {
+      setWorkflowMessage('Menjalankan batch pertama: 3 Part / 6 akun…');
+      const finalState = await window.voiceAgent.startWorkflow(inputFolder);
+      setRuntime(finalState);
+      setWorkflowMessage('Tahap prepare batch pertama selesai. Voice selection + Generate adalah tahap berikutnya.');
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : 'Workflow gagal dijalankan.');
+    }
+  }
+
+  async function stopWorkflow() {
+    if (!window.voiceAgent) return;
+    try {
+      setRuntime(await window.voiceAgent.stopWorkflow());
+      setWorkflowMessage('Workflow dihentikan.');
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : 'Gagal menghentikan workflow.');
+    }
+  }
+
   const configuredCount = profiles.length;
+  const preparedCount = runtime.jobs.filter(j=>j.status==='prepared').length;
+  const activeCount = runtime.jobs.filter(j=>j.status==='opening'||j.status==='filling').length;
+  const issueCount = runtime.jobs.filter(j=>j.status==='error'||j.status==='needs_login').length;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -151,8 +272,8 @@ export default function App(){
       <button className="nav"><Settings2/>Settings</button>
       <div className="sidebar-bottom">
         <div className="mini-meter">
-          <div><span>Browser concurrency</span><b>6 / 50</b></div>
-          <div className="meter"><i style={{width:'12%'}}/></div>
+          <div><span>Browser concurrency</span><b>{activeCount} / 6</b></div>
+          <div className="meter"><i style={{width:`${Math.min(100,(activeCount/6)*100)}%`}}/></div>
         </div>
       </div>
     </aside>
@@ -164,32 +285,56 @@ export default function App(){
           <h1>{tab==='jobs'?'Production queue':tab==='accounts'?'Google AI Studio accounts':'Gemini API emergency pool'}</h1>
           <p className="muted">Setiap Part dibuat oleh 2 akun berbeda. Generate boleh jalan kapan saja, download dikunci ke 04:30–05:05 WIB.</p>
         </div>
-        <div className="actions">
-          <button className="btn ghost"><RefreshCw size={16}/>Scan</button>
-          <button className="btn primary"><Play size={16}/>Mulai Semua</button>
-          <button className="btn danger"><Square size={14}/>Stop</button>
-        </div>
+        {tab==='jobs' && <div className="actions">
+          <button className="btn ghost" onClick={scanInput} disabled={runtime.running}><RefreshCw size={16}/>Scan</button>
+          <button className="btn primary" onClick={startWorkflow} disabled={runtime.running}><Play size={16}/>{runtime.running?'Running…':'Mulai'}</button>
+          <button className="btn danger" onClick={stopWorkflow} disabled={!runtime.running}><Square size={14}/>Stop</button>
+        </div>}
       </section>
 
       {tab==='jobs' && <>
-        <section className="stats-grid">
-          <div className="stat"><Gauge/><div><span>Parts</span><b>15</b><small>30 voice jobs</small></div></div>
-          <div className="stat"><CircleUserRound/><div><span>Accounts</span><b>{configuredCount}/50</b><small>25 pasangan maksimum</small></div></div>
-          <div className="stat"><Download/><div><span>Download</span><b>{downloadState.open ? 'OPEN' : 'LOCKED'}</b><small>{downloadState.nextLabel}</small></div></div>
-          <div className="stat"><Sparkles/><div><span>AI mode</span><b>Local first</b><small>Gemini saat perlu</small></div></div>
-        </section>
-        <section className="panel">
-          <div className="panel-head"><div><b>Part → Account pairing</b><span>Urutan otomatis, tepat 2 akun untuk setiap Part</span></div><Pill tone="good">3 Part / 6 browser concurrent</Pill></div>
-          <div className="table">
-            <div className="tr th"><span>PART</span><span>ACCOUNT A</span><span>ACCOUNT B</span><span>STATUS</span><span>DOWNLOAD</span></div>
-            {visibleJobs.map((j,idx)=><div className="tr" key={j.partNumber}>
-              <span className="part">Part {String(j.partNumber).padStart(2,'0')}</span>
-              <span><Pill tone={profileMap.has(j.accountA)?'good':'default'}>{voLabel(j.accountA)}</Pill></span>
-              <span><Pill tone={profileMap.has(j.accountB)?'good':'default'}>{voLabel(j.accountB)}</Pill></span>
-              <span className={idx<3?'status-good':'muted'}>{idx<3?'Next batch':'Waiting'}</span>
-              <span className="muted">Queued</span>
-            </div>)}
+        <section className="project-bar">
+          <button className="btn ghost" onClick={chooseInputFolder} disabled={runtime.running}><FolderOpen size={16}/>Pilih Folder</button>
+          <div className="project-path">
+            <span>INPUT PART</span>
+            <b>{inputFolder || 'Belum memilih folder'}</b>
           </div>
+          <Pill tone={runtime.running?'busy':'default'}>{runtime.running?'Workflow running':'Ready'}</Pill>
+        </section>
+
+        {workflowMessage && <div className={issueCount ? 'runtime-msg warn-msg' : 'runtime-msg'}>{workflowMessage}</div>}
+
+        <section className="stats-grid">
+          <div className="stat"><Gauge/><div><span>Parts</span><b>{groupedJobs.length}</b><small>{runtime.jobs.length} voice jobs</small></div></div>
+          <div className="stat"><CircleUserRound/><div><span>Accounts</span><b>{configuredCount}/50</b><small>25 pasangan maksimum</small></div></div>
+          <div className="stat"><CheckCircle2/><div><span>Prepared</span><b>{preparedCount}</b><small>dari {runtime.jobs.length || 0} VO</small></div></div>
+          <div className="stat"><Download/><div><span>Download</span><b>{downloadState.open ? 'OPEN' : 'LOCKED'}</b><small>{downloadState.nextLabel}</small></div></div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <div><b>Part → Account pairing</b><span>Batch pertama menjalankan maksimal 3 Part / 6 Chrome window</span></div>
+            <div className="head-actions">
+              {issueCount > 0 && <Pill tone="bad"><AlertTriangle size={12}/>{issueCount} issue</Pill>}
+              <Pill tone="good">1 Part = 2 akun</Pill>
+            </div>
+          </div>
+
+          {groupedJobs.length === 0 ? <div className="empty-state">
+            <FolderOpen size={28}/>
+            <b>Pilih folder INPUT PART</b>
+            <span>Aplikasi akan membaca Part1, Part2, Part3… dari TXT, MD, atau DOCX.</span>
+          </div> :
+          <div className="table">
+            <div className="tr th"><span>PART</span><span>ACCOUNT A</span><span>ACCOUNT B</span><span>STATUS</span><span>SOURCE</span></div>
+            {groupedJobs.map(row=><div className="tr" key={row.partNumber}>
+              <span className="part">Part {String(row.partNumber).padStart(2,'0')}</span>
+              <span><Pill tone={statusTone(row.a)}>{row.a?.status==='opening'&&<LoaderCircle size={11}/>} {row.a?voLabel(row.a.accountSlot):'—'} · {shortStatus(row.a)}</Pill></span>
+              <span><Pill tone={statusTone(row.b)}>{row.b?.status==='opening'&&<LoaderCircle size={11}/>} {row.b?voLabel(row.b.accountSlot):'—'} · {shortStatus(row.b)}</Pill></span>
+              <span className="job-detail">{row.a?.message || row.b?.message || 'Menunggu'}</span>
+              <span className="source-name" title={row.sourceName}>{row.sourceName}</span>
+            </div>)}
+          </div>}
         </section>
       </>}
 
@@ -242,11 +387,12 @@ export default function App(){
     <aside className="agent">
       <div className="agent-head"><div className="agent-icon"><Bot/></div><div><b>AI Agent</b><span><i className="dot ready"/>Siap mengontrol workflow</span></div></div>
       <div className="agent-feed">
-        <div className="agent-card"><Sparkles size={17}/><p>Saya akan memprioritaskan kontrol lokal. Gemini dipakai saat perlu menganalisis error atau perintah kompleks.</p></div>
-        <div className="agent-msg"><span>System</span><p>Aturan aktif: 1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
-        <div className="agent-msg"><span>Agent</span><p>{configuredCount} dari 50 slot akun sudah dikonfigurasi. Default executor: 3 Part / 6 browser sekaligus.</p></div>
+        <div className="agent-card"><Sparkles size={17}/><p>Browser Controller V14-compatible sudah tersambung. Agent akan memakai kontrol lokal lebih dulu.</p></div>
+        <div className="agent-msg"><span>System</span><p>1 Part = 2 akun. Download hanya 04:30–05:05 WIB.</p></div>
+        <div className="agent-msg"><span>Runtime</span><p>{runtime.running ? 'Sedang menjalankan batch pertama.' : `${preparedCount} VO prepared, ${issueCount} issue.`}</p></div>
+        <div className="agent-msg"><span>Next engine step</span><p>Pilih voice, tekan Generate, deteksi selesai, lalu jalankan batch berikutnya.</p></div>
       </div>
-      <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Agent actions akan dicatat di activity log.</small></div>
+      <div className="agent-input"><textarea value={agentText} onChange={e=>setAgentText(e.target.value)} placeholder="Contoh: lanjutkan semua yang belum selesai..."/><button><Sparkles size={17}/></button><small>Chat Agent belum dieksekusi; tool layer sedang dibangun bertahap.</small></div>
     </aside>
   </div>;
 }
